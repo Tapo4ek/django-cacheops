@@ -66,8 +66,7 @@
         var data = google.visualization.arrayToDataTable([
           ['Queries', 'Statistics'],
           ['Cached', {{ graph_data.cached }}],
-          ['Uncached', {{ graph_data.uncached }}],
-          ['Invalidated', {{ graph_data.invalidated }}]
+          ['Uncached', {{ graph_data.uncached }}]
         ]);
         var options = {
           title: 'Cacheops statistics',
@@ -134,5 +133,12 @@
     {% endfor %}
     </tbody>
 </table>
+<hr size="1">
+<a href="?reset=1">Reset stats</a>
+<script>
+      setTimeout(function() {
+          document.location.href = document.location.href;
+      }, 60000);
+</script>
 </body>
 </html>

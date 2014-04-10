@@ -1,6 +1,6 @@
 from django.contrib.admin.views.decorators import staff_member_required
 from django.contrib.auth.decorators import login_required
-from django.shortcuts import render
+from django.shortcuts import render, redirect
 
 from cacheops.conf import redis_client
 
@@ -10,6 +10,12 @@ KEYS = ['uncached', 'cached', 'invalidated']
 @staff_member_required
 @login_required
 def cacheops_stats(request):
+    if request.GET.get('reset'):
+        redis_client.delete('stats_models')
+        for key in redis_client.keys('cache_stats:*'):
+            redis_client.delete(key)
+        return redirect('cacheops_stats')
+
     data = {}
     graph_data = dict(zip(KEYS, [0, 0, 0]))
     for model in redis_client.smembers('stats_models'):

@@ -89,6 +89,9 @@ def model_profile(model):
     """
     model_profiles = prepare_profiles()
 
+    if not model:
+        return None
+
     app = model._meta.app_label
     # module_name is fallback for Django 1.5-
     model_name = getattr(model._meta, 'model_name', None) or model._meta.module_name

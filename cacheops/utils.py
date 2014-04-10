@@ -15,7 +15,7 @@ except ImportError:
     from functools import reduce
 import six
 from cacheops import cross
-from cacheops.conf import redis_client
+from cacheops.conf import redis_client, LOG_ENABLED
 from cacheops.funcy import memoize
 
 import django
@@ -199,7 +199,17 @@ from django.utils.safestring import mark_safe
 NEWLINE_BETWEEN_TAGS = mark_safe('>\n<')
 SPACE_BETWEEN_TAGS = mark_safe('> <')
 
+
 def carefully_strip_whitespace(text):
     text = re.sub(r'>\s*\n\s*<', NEWLINE_BETWEEN_TAGS, text)
     text = re.sub(r'>\s{2,}<', SPACE_BETWEEN_TAGS, text)
     return text
+
+
+def log_cache(meta, cache_type, is_cached, log_this=True):
+    if LOG_ENABLED is True and log_this:
+        model = '%s.%s' % (meta.app_label, meta.module_name)
+        hkey = 'cache_stats:%s:%d' % (model, is_cached)
+
+        redis_client.sadd('stats_models', model)
+        redis_client.hincrby(hkey, cache_type)

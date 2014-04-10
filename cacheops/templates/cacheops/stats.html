@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Cacheops stats</title>
+    <style>
+        table.table {
+            font-family: arial;
+            background-color: #CDCDCD;
+            margin: 10px 0pt 15px;
+            font-size: 8pt;
+            width: 100%;
+            text-align: left;
+        }
+
+        table.table thead tr th, table.table tfoot tr th {
+            background-color: #e6EEEE;
+            border: 1px solid #FFF;
+            font-size: 8pt;
+            padding: 4px;
+        }
+
+        table.table tbody td {
+            color: #3D3D3D;
+            padding: 4px;
+        }
+
+        table.table tbody td .keys {
+            padding-left: 30px;
+        }
+
+        table.table tbody td .types {
+            padding-left: 10px;
+            font-weight: bold;
+        }
+
+        .invalidate {
+            background-color: #FC9D9D;
+        }
+        .cached-get, .cached-fetch, .cached-count {
+            background-color: #CFFAF0;
+        }
+        .uncached-get, .uncached-fetch, .uncached-count {
+            background-color: #FCC5C5;
+        }
+        .model {
+            background-color: #CFCFD4;
+        }
+        .other {
+            background-color: #FFFFFF;
+        }
+        .hr {
+            border-top: 1px solid red;
+        }
+
+    </style>
+    <script type="text/javascript" src="https://www.google.com/jsapi"></script>
+      <style>
+          select {
+              font-size: 50pt;
+          }
+      </style>
+    <script type="text/javascript">
+      google.load("visualization", "1", {packages:["corechart"]});
+      google.setOnLoadCallback(drawChart);
+      function drawChart() {
+        var data = google.visualization.arrayToDataTable([
+          ['Queries', 'Statistics'],
+          ['Cached', {{ graph_data.cached }}],
+          ['Uncached', {{ graph_data.uncached }}],
+          ['Invalidated', {{ graph_data.invalidated }}]
+        ]);
+        var options = {
+          title: 'Cacheops statistics',
+            is3D: true,
+            titleTextStyle: {
+                fontSize: '20px',
+            }
+        };
+        var chart = new google.visualization.PieChart(document.getElementById('piechart'));
+        chart.draw(data, options);
+      };
+    </script>
+</head>
+<body>
+<div id="piechart" style="width: 900px; height: 500px;"></div>
+<hr size="1">
+  <table>
+      <tr>
+          <td><strong>Cached</strong></td>
+          <td>{{ graph_data.cached }}</td>
+      </tr>
+      <tr>
+          <td><strong>Uncached</strong></td>
+          <td>{{ graph_data.uncached }}</td>
+      </tr>
+      <tr>
+          <td><strong>Invalidated</strong></td>
+          <td>{{ graph_data.invalidated }}</td>
+      </tr>
+      <tr>
+          <td><strong>Total</strong></td>
+          <td>{{ graph_data.total }}</td>
+      </tr>
+  </table>
+  <hr size="1">
+
+<table class="table" border="0" cellpadding="0"
+       cellspacing="1">
+    <thead>
+    <tr>
+        <th style="width: 75px;">Models</th>
+        <th style="width: 75px;">Counts</th>
+    </tr>
+    </thead>
+    <tbody>
+    {% for model,data in data_list.items %}
+        <tr class="other">
+            <td colspan="2" class="hr">
+                <strong>{{model|upper}}</strong>
+                {{ data.total }}: <font color="green">{{ data.cached }}</font> / <font color="red">{{ data.uncached }}</font>
+            </td>
+        </tr>
+        {% for type,cache_data in data.data.items %}
+            <tr class="model">
+                <td colspan="2"><span class="types">{{ type|capfirst }}</span></td>
+            </tr>
+            {% for key,count in cache_data.items %}
+                <tr class="{{ type }}-{{ key }}">
+                    <td><span class="keys">{{ key }}</span></td>
+                    <td>{{ count }}</td>
+                </tr>
+            {% endfor %}
+        {% endfor %}
+    {% endfor %}
+    </tbody>
+</table>
+</body>
+</html>

@@ -28,6 +28,9 @@ for key in profiles:
 # Support degradation on redis fail
 DEGRADE_ON_FAILURE = getattr(settings, 'CACHEOPS_DEGRADE_ON_FAILURE', False)
 
+LOG_ENABLED = getattr(settings, 'CACHEOPS_LOG_ENABLED', False)
+
+
 def handle_connection_failure(func):
     if not DEGRADE_ON_FAILURE:
         return func

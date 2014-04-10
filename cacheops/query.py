@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+
 import sys
 try:
     import cPickle as pickle
@@ -23,7 +24,7 @@ except ImportError:
     MAX_GET_RESULTS = None
 
 from cacheops.conf import model_profile, redis_client, handle_connection_failure
-from cacheops.utils import monkey_mix, dnf, get_model_name, non_proxy, stamp_fields, load_script
+from cacheops.utils import monkey_mix, dnf, get_model_name, non_proxy, stamp_fields, load_script, log_cache
 from cacheops.invalidation import invalidate_obj, invalidate_model
 
 
@@ -93,9 +94,11 @@ def cached_as(sample, extra=None, timeout=None):
             # NOTE: These args must not effect function result.
             #       I'm keeping them to cache view functions.
             cache_data = redis_client.get(cache_key)
-            if cache_data is not None:
-                return pickle.loads(cache_data)
 
+            if cache_data is not None:
+                log_cache(queryset.model._meta, key_extra, 1)
+                return pickle.loads(cache_data)
+            log_cache(queryset.model._meta, key_extra, 0)
             result = func(*args)
             queryset._cache_results(cache_key, result, timeout)
             return result
@@ -331,6 +334,7 @@ class QuerySetMixin(object):
         # TODO: do not cache empty queries in Django 1.6
         superiter = self._no_monkey.iterator
         cache_this = self._cacheprofile and 'fetch' in self._cacheconf['ops']
+        extra = hasattr(self, '_cache_method') and 'get' or 'fetch'
 
         if cache_this:
             cache_key = self._cache_key()
@@ -338,12 +342,14 @@ class QuerySetMixin(object):
                 # Trying get data from cache
                 cache_data = redis_client.get(cache_key)
                 if cache_data is not None:
+                    log_cache(self.query.model._meta, extra, 1)
                     results = pickle.loads(cache_data)
                     for obj in results:
                         yield obj
                     raise StopIteration
 
         # Cache miss - fallback to overriden implementation
+        log_cache(self.query.model._meta, extra, 0, cache_this)
         results = []
         for obj in superiter(self):
             if cache_this:
@@ -366,6 +372,7 @@ class QuerySetMixin(object):
             return self._no_monkey.count(self)
 
     def get(self, *args, **kwargs):
+        self._cache_method = 'get'
         # .get() uses the same .iterator() method to fetch data,
         # so here we add 'fetch' to ops
         if self._cacheprofile and 'get' in self._cacheconf['ops']:
@@ -506,6 +513,7 @@ def invalidate_m2m(sender=None, instance=None, model=None, action=None, pk_set=N
 
 
 installed = False
+
 
 def install_cacheops():
     """

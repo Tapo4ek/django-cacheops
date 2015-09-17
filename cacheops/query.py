@@ -20,10 +20,19 @@ except ImportError:
     MAX_GET_RESULTS = None
 
 from .conf import model_profile, redis_client, handle_connection_failure, LRU, ALL_OPS
-from .utils import monkey_mix, get_model_name, stamp_fields, load_script, \
-                   func_cache_key, cached_view_fab, get_thread_id, family_has_profile
 from .tree import dnfs
 from .invalidation import invalidate_obj, invalidate_dict
+from .utils import (
+    monkey_mix,
+    get_model_name,
+    stamp_fields,
+    load_script,
+    func_cache_key,
+    cached_view_fab,
+    get_thread_id,
+    family_has_profile,
+    log_cache
+)
 
 
 __all__ = ('cached_as', 'cached_view_as', 'install_cacheops')
@@ -87,8 +96,11 @@ def cached_as(*samples, **kwargs):
 
             cache_data = redis_client.get(cache_key)
             if cache_data is not None:
+                if len(querysets):
+                    log_cache(querysets[0].model._meta, key_extra, 0)
                 return pickle.loads(cache_data)
-
+            if len(querysets):
+                log_cache(querysets[0].model._meta, key_extra, 0)
             result = func(*args, **kwargs)
             cache_thing(cache_key, result, cond_dnfs, timeout)
             return result
@@ -250,6 +262,7 @@ class QuerySetMixin(object):
         # TODO: do not cache empty queries in Django 1.6
         superiter = self._no_monkey.iterator
         cache_this = self._cacheprofile and 'fetch' in self._cacheconf['ops']
+        extra = hasattr(self, '_cache_method') and 'get' or 'fetch'
 
         if cache_this:
             cache_key = self._cache_key()
@@ -257,12 +270,14 @@ class QuerySetMixin(object):
                 # Trying get data from cache
                 cache_data = redis_client.get(cache_key)
                 if cache_data is not None:
+                    log_cache(self.query.model._meta, extra, 1)
                     results = pickle.loads(cache_data)
                     for obj in results:
                         yield obj
                     raise StopIteration
 
         # Cache miss - fallback to overriden implementation
+        log_cache(self.query.model._meta, extra, 0, cache_this)
         results = []
         for obj in superiter(self):
             if cache_this:
@@ -285,6 +300,7 @@ class QuerySetMixin(object):
             return self._no_monkey.count(self)
 
     def get(self, *args, **kwargs):
+        self._cache_method = 'get'
         # .get() uses the same .iterator() method to fetch data,
         # so here we add 'fetch' to ops
         if self._cacheprofile and 'get' in self._cacheconf['ops']:

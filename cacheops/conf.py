@@ -29,6 +29,7 @@ for key in profiles:
     profiles[key] = dict(profile_defaults, **profiles[key])
 
 
+LOG_ENABLED = getattr(settings, 'CACHEOPS_LOG_ENABLED', False)
 LRU = getattr(settings, 'CACHEOPS_LRU', False)
 DEGRADE_ON_FAILURE = getattr(settings, 'CACHEOPS_DEGRADE_ON_FAILURE', False)
 
@@ -129,6 +130,9 @@ def model_profile(model):
     Returns cacheops profile for a model
     """
     model_profiles = prepare_profiles()
+
+    if not model:
+        return None
 
     app = model._meta.app_label
     # module_name is fallback for Django 1.5-

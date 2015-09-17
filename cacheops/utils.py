@@ -12,7 +12,7 @@ import django
 from django.db import models
 from django.http import HttpRequest
 
-from .conf import redis_client, model_profile
+from .conf import redis_client, model_profile, LOG_ENABLED
 
 
 # NOTE: we don't serialize this fields since their values could be very long
@@ -197,3 +197,12 @@ def carefully_strip_whitespace(text):
 
 def get_thread_id():
     return threading.current_thread().ident
+
+
+def log_cache(meta, cache_type, is_cached, log_this=True):
+    if LOG_ENABLED is True and log_this:
+        model = '%s.%s' % (meta.app_label, meta.model_name)
+        hkey = 'cache_stats:%s:%d' % (model, is_cached)
+
+        redis_client.sadd('stats_models', model)
+        redis_client.hincrby(hkey, cache_type)

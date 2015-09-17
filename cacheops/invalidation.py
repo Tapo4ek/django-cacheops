@@ -10,7 +10,13 @@ except ImportError:
     from django.db.models.expressions import Expression
 
 from .conf import redis_client, handle_connection_failure
-from .utils import non_proxy, load_script, get_thread_id, NOT_SERIALIZED_FIELDS
+from .utils import (
+    non_proxy,
+    load_script,
+    get_thread_id,
+    log_cache,
+    NOT_SERIALIZED_FIELDS
+)
 
 
 __all__ = ('invalidate_obj', 'invalidate_model', 'invalidate_all', 'no_invalidation')
@@ -29,12 +35,15 @@ def invalidate_dict(model, obj_dict):
         json.dumps(obj_dict, default=str)
     ])
 
+
 def invalidate_obj(obj):
     """
     Invalidates caches that can possibly be influenced by object
     """
     model = non_proxy(obj.__class__)
+    log_cache(model._meta, 'invalidate', 2)
     invalidate_dict(model, get_obj_dict(model, obj))
+
 
 @handle_connection_failure
 def invalidate_model(model):
@@ -46,10 +55,12 @@ def invalidate_model(model):
     if no_invalidation.active:
         return
     model = non_proxy(model)
+    log_cache(model._meta, 'invalidate', 2)
     conjs_keys = redis_client.keys('conj:%s:*' % model._meta.db_table)
     if conjs_keys:
         cache_keys = redis_client.sunion(conjs_keys)
         redis_client.delete(*(list(cache_keys) + conjs_keys))
+
 
 @handle_connection_failure
 def invalidate_all():

@@ -1,62 +1,57 @@
 # -*- coding: utf-8 -*-
-from __future__ import absolute_import
-from operator import concat, itemgetter
-from itertools import product
+import re
+import json
 import inspect
-
-try:
-    from itertools import imap
-except ImportError:
-    # Use Python 2 map/filter here for now
-    imap = map
-    map = lambda f, seq: list(imap(f, seq))
-    ifilter = filter
-    filter = lambda f, seq: list(ifilter(f, seq))
-    from functools import reduce
 import six
-from cacheops import cross
-from cacheops.conf import redis_client, LOG_ENABLED
-from cacheops.funcy import memoize
+from funcy import memoize, compose, wraps, any
+from funcy.py2 import mapcat
+from .cross import md5hex
 
-import django
-from django.db.models import Model
-from django.db.models.query import QuerySet
-from django.db.models.sql import AND, OR
-from django.db.models.sql.query import Query, ExtraWhere
-from django.db.models.sql.where import EverythingNode, NothingNode
-from django.db.models.sql.expressions import SQLEvaluator
-# A new thing in Django 1.6
-try:
-    from django.db.models.sql.where import SubqueryConstraint
-except ImportError:
-    class SubqueryConstraint(object):
-        pass
+from django.db import models
+from django.http import HttpRequest
+
+from .conf import model_profile
 
 
-LONG_DISJUNCTION = 8
+# NOTE: we don't serialize this fields since their values could be very long
+#       and one should not filter by their equality anyway.
+NOT_SERIALIZED_FIELDS = (
+    models.FileField,
+    models.TextField, # One should not filter by long text equality
+    models.BinaryField,
+)
 
 
+@memoize
 def non_proxy(model):
     while model._meta.proxy:
         # Every proxy model has exactly one non abstract parent model
-        model = next(b for b in model.__bases__ if issubclass(b, Model) and not b._meta.abstract)
+        model = next(b for b in model.__bases__
+                       if issubclass(b, models.Model) and not b._meta.abstract)
     return model
 
+def model_family(model):
+    """
+    Returns a list of all proxy models, including subclasess, superclassses and siblings.
+    """
+    def class_tree(cls):
+        return [cls] + mapcat(class_tree, cls.__subclasses__())
 
-if django.VERSION < (1, 6):
-    def get_model_name(model):
-        return '%s.%s' % (model._meta.app_label, model._meta.module_name)
-else:
-    def get_model_name(model):
-        return '%s.%s' % (model._meta.app_label, model._meta.model_name)
+    # NOTE: we also list multitable submodels here, we just don't care.
+    #       Cacheops doesn't support them anyway.
+    return class_tree(non_proxy(model))
+
+
+@memoize
+def family_has_profile(cls):
+    return any(model_profile, model_family(cls))
 
 
 class MonkeyProxy(object):
     def __init__(self, cls):
-        monkey_bases = tuple(b._no_monkey for b in cls.__bases__ if hasattr(b, '_no_monkey'))
+        monkey_bases = [b._no_monkey for b in cls.__bases__ if hasattr(b, '_no_monkey')]
         for monkey_base in monkey_bases:
-            for name, value in monkey_base.__dict__.items():
-                setattr(self, name, value)
+            self.__dict__.update(monkey_base.__dict__)
 
 
 def monkey_mix(cls, mixin, methods=None):
@@ -89,127 +84,88 @@ def monkey_mix(cls, mixin, methods=None):
         setattr(cls, name, six.get_unbound_function(method))
 
 
-def dnf(qs):
-    """
-    Converts sql condition tree to DNF.
-
-    Any negations, conditions with lookups other than __exact or __in,
-    conditions on joined models and subrequests are ignored.
-    __in is converted into = or = or = ...
-    """
-    SOME = object()
-
-    def negate(el):
-        return SOME if el is SOME else \
-               (el[0], el[1], not el[2])
-
-    def strip_negates(conj):
-        return [term[:2] for term in conj if term is not SOME and term[2]]
-
-    def _dnf(where):
-        if isinstance(where, tuple):
-            constraint, lookup, annotation, value = where
-            if constraint.alias != alias or isinstance(value, (QuerySet, Query, SQLEvaluator)):
-                return [[SOME]]
-            elif lookup == 'exact':
-                # attribute, value, negation
-                return [[(attname_of(model, constraint.col), value, True)]]
-            elif lookup == 'isnull':
-                return [[(attname_of(model, constraint.col), None, value)]]
-            elif lookup == 'in' and len(value) < LONG_DISJUNCTION:
-                return [[(attname_of(model, constraint.col), v, True)] for v in value]
-            else:
-                return [[SOME]]
-        elif isinstance(where, EverythingNode):
-            return [[]]
-        elif isinstance(where, NothingNode):
-            return []
-        elif isinstance(where, (ExtraWhere, SubqueryConstraint)):
-            return [[SOME]]
-        elif len(where) == 0:
-            return [[]]
-        else:
-            chilren_dnfs = map(_dnf, where.children)
-
-            if len(chilren_dnfs) == 0:
-                return [[]]
-            elif len(chilren_dnfs) == 1:
-                result = chilren_dnfs[0]
-            else:
-                # Just unite children joined with OR
-                if where.connector == OR:
-                    result = reduce(concat, chilren_dnfs)
-                # Use Cartesian product to AND children
-                else:
-                    result = [reduce(concat, p) for p in product(*chilren_dnfs)]
-
-            # Negating and expanding brackets
-            if where.negated:
-                result = [map(negate, p) for p in product(*result)]
-
-            return result
-
-    where = qs.query.where
-    model = qs.model
-    alias = model._meta.db_table
-
-    result = _dnf(where)
-    # Cutting out negative terms and negation itself
-    result = [strip_negates(conj) for conj in result]
-    # Any empty conjunction eats up the rest
-    # NOTE: a more elaborate DNF reduction is not really needed,
-    #       just keep your querysets sane.
-    if not all(result):
-        return [[]]
-    return map(sorted, result)
-
-
-def attname_of(model, col, cache={}):
-    if model not in cache:
-        cache[model] = dict((f.db_column, f.attname) for f in model._meta.fields)
-    return cache[model].get(col, col)
-
-
 @memoize
 def stamp_fields(model):
     """
     Returns serialized description of model fields.
     """
     stamp = str([(f.name, f.attname, f.db_column, f.__class__) for f in model._meta.fields])
-    return cross.md5(stamp).hexdigest()
+    return md5hex(stamp)
 
 
-### Lua script loader
+### Cache keys calculation
 
-import os.path
+def obj_key(obj):
+    if isinstance(obj, models.Model):
+        return '%s.%s.%s' % (obj._meta.app_label, obj._meta.model_name, obj.pk)
+    else:
+        return str(obj)
 
-@memoize
-def load_script(name):
-    filename = os.path.join(os.path.dirname(__file__), 'lua/%s.lua' % name)
-    with open(filename) as f:
-        code = f.read()
-    return redis_client.register_script(code)
+def func_cache_key(func, args, kwargs, extra=None):
+    """
+    Calculate cache key based on func and arguments
+    """
+    factors = [func.__module__, func.__name__, args, kwargs, extra]
+    if hasattr(func, '__code__'):
+        factors.append(func.__code__.co_firstlineno)
+    return md5hex(json.dumps(factors, sort_keys=True, default=obj_key))
+
+def debug_cache_key(func, args, kwargs, extra=None):
+    """
+    Same as func_cache_key(), but doesn't take into account function line.
+    Handy to use when editing code.
+    """
+    factors = [func.__module__, func.__name__, args, kwargs, extra]
+    return md5hex(json.dumps(factors, sort_keys=True, default=obj_key))
+
+def view_cache_key(func, args, kwargs, extra=None):
+    """
+    Calculate cache key for view func.
+    Use url instead of not properly serializable request argument.
+    """
+    if hasattr(args[0], 'build_absolute_uri'):
+        uri = args[0].build_absolute_uri()
+    else:
+        uri = args[0]
+    return 'v:' + func_cache_key(func, args[1:], kwargs, extra=(uri, extra))
+
+def cached_view_fab(_cached):
+    def force_render(response):
+        if hasattr(response, 'render') and callable(response.render):
+            response.render()
+        return response
+
+    def cached_view(*dargs, **dkwargs):
+        def decorator(func):
+            dkwargs['key_func'] = view_cache_key
+            cached_func = _cached(*dargs, **dkwargs)(compose(force_render, func))
+
+            @wraps(func)
+            def wrapper(request, *args, **kwargs):
+                assert isinstance(request, HttpRequest),                            \
+                       "A view should be passed with HttpRequest as first argument"
+                if request.method not in ('GET', 'HEAD'):
+                    return func(request, *args, **kwargs)
+
+                return cached_func(request, *args, **kwargs)
+
+            if hasattr(cached_func, 'invalidate'):
+                wrapper.invalidate = cached_func.invalidate
+                wrapper.key = cached_func.key
+
+            return wrapper
+        return decorator
+    return cached_view
 
 
 ### Whitespace handling for template tags
 
-import re
 from django.utils.safestring import mark_safe
 
 NEWLINE_BETWEEN_TAGS = mark_safe('>\n<')
 SPACE_BETWEEN_TAGS = mark_safe('> <')
 
-
 def carefully_strip_whitespace(text):
     text = re.sub(r'>\s*\n\s*<', NEWLINE_BETWEEN_TAGS, text)
     text = re.sub(r'>\s{2,}<', SPACE_BETWEEN_TAGS, text)
     return text
-
-
-def log_cache(meta, cache_type, is_cached, log_this=True):
-    if LOG_ENABLED is True and log_this:
-        model = '%s.%s' % (meta.app_label, meta.module_name)
-        hkey = 'cache_stats:%s:%d' % (model, is_cached)
-
-        redis_client.sadd('stats_models', model)
-        redis_client.hincrby(hkey, cache_type)

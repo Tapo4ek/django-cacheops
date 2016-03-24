@@ -51,12 +51,18 @@ def family_has_profile(cls):
 
 
 if django.VERSION < (1, 6):
+
     def get_model_name(model):
         return model._meta.module_name
+
+    def get_model_name_from_meta(meta):
+        return meta.module_name
 else:
     def get_model_name(model):
         return model._meta.model_name
 
+    def get_model_name_from_meta(meta):
+        return meta.model_name
 
 class MonkeyProxy(object):
     def __init__(self, cls):
@@ -201,7 +207,7 @@ def get_thread_id():
 
 def log_cache(meta, cache_type, is_cached, log_this=True):
     if LOG_ENABLED is True and log_this:
-        model = '%s.%s' % (meta.app_label, meta.model_name)
+        model = '%s.%s' % (meta.app_label, get_model_name_from_meta(meta))
         hkey = 'cache_stats:%s:%d' % (model, is_cached)
 
         redis_client.sadd('stats_models', model)
